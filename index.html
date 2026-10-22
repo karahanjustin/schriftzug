@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#ff9a3c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<title>Schriftzug Läufer</title>
+<style>
+  :root { --accent: #ff9a3c; --bg: #ffffff; --ink: #1c1f26; --muted: #6b7280; --good: #2fb36a; --bad: #e0493f; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #e9e6df; color: var(--ink);
+    font: 15px/1.4 -apple-system, "SF Pro Text", Roboto, "Helvetica Neue", Arial, sans-serif; touch-action: none; overscroll-behavior: none; }
+  #map { position: absolute; inset: 0; }
+  .card { position: absolute; left: 12px; right: 12px; background: rgba(255,255,255,.94); border-radius: 14px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.18); backdrop-filter: blur(8px); }
+  #top { top: calc(10px + env(safe-area-inset-top)); padding: 10px 14px; display: flex; align-items: center; gap: 12px; }
+  #top b { font-size: 20px; letter-spacing: 2px; }
+  #top .stats { flex: 1; text-align: right; color: var(--muted); font-size: 13px; line-height: 1.3; }
+  #top .stats span { display: block; color: var(--ink); font-weight: 600; font-size: 15px; }
+  #hint { bottom: calc(84px + env(safe-area-inset-bottom)); padding: 12px 16px; display: flex; align-items: center; gap: 14px; }
+  #arrow { width: 54px; height: 54px; border-radius: 12px; background: var(--accent); color: #fff; display: flex; align-items: center;
+    justify-content: center; font-size: 34px; font-weight: 700; flex: 0 0 auto; }
+  #hint b { display: block; font-size: 19px; }
+  #hint small { color: var(--muted); font-size: 13px; }
+  #hint .off { color: var(--bad); font-weight: 600; }
+  #ctrls { position: absolute; left: 12px; right: 12px; bottom: calc(14px + env(safe-area-inset-bottom)); display: flex; gap: 8px; }
+  #ctrls button { flex: 1; border: 0; border-radius: 12px; padding: 13px 8px; font: inherit; font-weight: 600; background: rgba(255,255,255,.94);
+    color: var(--ink); box-shadow: 0 4px 16px rgba(0,0,0,.16); }
+  #ctrls button.on { background: var(--accent); color: #fff; }
+  #attrib { position: absolute; right: 6px; bottom: calc(76px + env(safe-area-inset-bottom)); font-size: 10px; color: #555;
+    background: rgba(255,255,255,.7); padding: 1px 5px; border-radius: 4px; pointer-events: none; }
+  #empty { position: absolute; inset: 0; background: #fff; display: none; flex-direction: column; justify-content: center; padding: 28px; gap: 12px; }
+  #empty h1 { margin: 0; font-size: 22px; }
+  #empty p { color: var(--muted); margin: 0; }
+  #empty textarea { width: 100%; height: 110px; border: 1px solid #ccc; border-radius: 10px; padding: 10px; font: 13px monospace; }
+  #empty button { border: 0; border-radius: 12px; padding: 14px; font: inherit; font-weight: 600; background: var(--accent); color: #fff; }
+  #toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(28,31,38,.92); color: #fff;
+    padding: 14px 18px; border-radius: 12px; display: none; max-width: 80%; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+<div class="card" id="top"><b id="title">Schriftzug</b><div class="stats"><span id="progress">0 %</span><div id="dist">0,0 von 0,0 km</div></div></div>
+<div id="attrib">© OpenStreetMap-Mitwirkende</div>
+<div class="card" id="hint"><div id="arrow">●</div><div><b id="hintMain">Warte auf GPS</b><small id="hintSub">Standortfreigabe erlauben</small></div></div>
+<div id="ctrls">
+  <button id="btnFollow" class="on">Folgen</button>
+  <button id="btnRotate">Drehen</button>
+  <button id="btnOverview">Übersicht</button>
+</div>
+<div id="toast"></div>
+<div id="empty">
+  <h1>Schriftzug Läufer</h1>
+  <p>Hier fehlt noch eine Route. Öffne den Link aus Schriftzug am Mac (QR-Code scannen) oder füge ihn hier ein.</p>
+  <textarea id="pasteBox" placeholder="https://potsdam-media.de/schriftzug/#t=..."></textarea>
+  <button id="pasteBtn">Route laden</button>
+</div>
+
+<script>
+'use strict';
+// ---------- Routendaten aus dem Link ----------
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const B64I = {}; for (let i = 0; i < 64; i++) B64I[B64[i]] = i;
+function decodePoly(str, prec = 5) {
+  const f = Math.pow(10, prec); const out = []; let i = 0, la = 0, lo = 0;
+  while (i < str.length) {
+    let shift = 0, result = 0, b;
+    do { b = B64I[str[i++]]; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20 && i < str.length);
+    la += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0; result = 0;
+    do { b = B64I[str[i++]]; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20 && i < str.length);
+    lo += (result & 1) ? ~(result >> 1) : (result >> 1);
+    out.push([la / f, lo / f]);
+  }
+  return out;
+}
+function parseRoute(frag) {
+  const q = new URLSearchParams(frag.replace(/^#/, ''));
+  if (!q.get('p')) return null;
+  const pts = decodePoly(q.get('p'));
+  const segs = (q.get('s') || '').split(',').filter(Boolean).map(x => { const [a, ch, kind] = x.split('.'); return { start: +a, ch: decodeURIComponent(ch || ''), kind: +kind }; });
+  for (let i = 0; i < segs.length; i++) segs[i].end = i + 1 < segs.length ? segs[i + 1].start : pts.length - 1;
+  const corners = (q.get('c') || '').split(',').filter(Boolean).map(Number);
+  return { text: q.get('t') || '', len: +(q.get('l') || 0), pts, segs, corners, sim: q.get('sim') === '1', frag };
+}
+
+// ---------- Projektion ----------
+const TILE = 256;
+const lon2x = lon => (lon + 180) / 360;
+const lat2y = lat => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2; };
+const x2lon = x => x * 360 - 180;
+const y2lat = y => Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180 / Math.PI;
+
+const canvas = document.getElementById('map'); const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+const view = { cx: 0.5, cy: 0.33, z: 16, rot: 0 };
+const ui = { follow: true, rotate: false };
+const scale = () => TILE * Math.pow(2, view.z);
+const anchorY = () => ui.follow ? H * 0.6 : H / 2;
+function toScreen(wx, wy) {
+  const s = scale(); let dx = (wx - view.cx) * s, dy = (wy - view.cy) * s;
+  if (view.rot) { const c = Math.cos(-view.rot), si = Math.sin(-view.rot); const x = dx * c - dy * si, y = dx * si + dy * c; dx = x; dy = y; }
+  return [dx + W / 2, dy + anchorY()];
+}
+function fromScreen(sx, sy) {
+  const s = scale(); let dx = sx - W / 2, dy = sy - anchorY();
+  if (view.rot) { const c = Math.cos(view.rot), si = Math.sin(view.rot); const x = dx * c - dy * si, y = dx * si + dy * c; dx = x; dy = y; }
+  return [dx / s + view.cx, dy / s + view.cy];
+}
+const metersPerPx = () => 40075016.686 * Math.cos(y2lat(view.cy) * Math.PI / 180) / scale();
+
+// ---------- Zustand ----------
+let route = null;          // pts, segs, corners, xy (Meter), cum (Streckenmeter)
+let geo = { ll: null, acc: 0, heading: null, speed: 0, t: 0 };
+let nav = { idx: 0, offm: 0, done: 0, finished: false, started: false, nextCorner: null };
+const tiles = new Map();
+const $ = id => document.getElementById(id);
+
+function prepare(r) {
+  const lat0 = r.pts[0][0], lon0 = r.pts[0][1];
+  const k = Math.cos(lat0 * Math.PI / 180) * 111320;
+  r.xy = r.pts.map(([la, lo]) => [(lo - lon0) * k, (la - lat0) * 111320]);
+  r.w = r.pts.map(([la, lo]) => [lon2x(lo), lat2y(la)]);
+  r.cum = [0]; for (let i = 1; i < r.xy.length; i++) r.cum.push(r.cum[i - 1] + Math.hypot(r.xy[i][0] - r.xy[i - 1][0], r.xy[i][1] - r.xy[i - 1][1]));
+  r.total = r.cum[r.cum.length - 1];
+  r.cornerSet = new Set(r.corners);
+  r.segOf = new Array(r.pts.length).fill(0);
+  r.segs.forEach((s, i) => { for (let j = s.start; j <= s.end; j++) r.segOf[j] = i; });
+  r.toXY = (la, lo) => [(lo - lon0) * k, (la - lat0) * 111320];
+  return r;
+}
+
+// ---------- Zeichnen ----------
+let drawPending = false;
+function requestDraw() { if (!drawPending) { drawPending = true; requestAnimationFrame(draw); } }
+function resize() {
+  DPR = window.devicePixelRatio || 1; W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR; canvas.style.width = W + 'px'; canvas.style.height = H + 'px'; requestDraw();
+}
+function draw() {
+  drawPending = false;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = '#e9e6df'; ctx.fillRect(0, 0, W, H);
+  drawTiles();
+  if (route) drawRoute();
+  drawMe();
+}
+function drawTiles() {
+  const zi = Math.max(3, Math.min(19, Math.round(view.z))); const n = Math.pow(2, zi);
+  const corners = [fromScreen(0, 0), fromScreen(W, 0), fromScreen(0, H), fromScreen(W, H)];
+  const tx0 = Math.floor(Math.min(...corners.map(c => c[0])) * n), tx1 = Math.floor(Math.max(...corners.map(c => c[0])) * n);
+  const ty0 = Math.max(0, Math.floor(Math.min(...corners.map(c => c[1])) * n)), ty1 = Math.min(n - 1, Math.floor(Math.max(...corners.map(c => c[1])) * n));
+  ctx.save();
+  if (view.rot) { ctx.translate(W / 2, anchorY()); ctx.rotate(-view.rot); ctx.translate(-W / 2, -anchorY()); }
+  const s = scale() / n;
+  for (let tx = tx0; tx <= tx1; tx++) for (let ty = ty0; ty <= ty1; ty++) {
+    const key = `${zi}/${((tx % n) + n) % n}/${ty}`;
+    let img = tiles.get(key);
+    if (!img) {
+      img = new Image(); img.onload = () => requestDraw(); img.src = `https://tile.openstreetmap.org/${key}.png`;
+      tiles.set(key, img); if (tiles.size > 400) tiles.delete(tiles.keys().next().value);
+    }
+    if (!img.complete || !img.naturalWidth) continue;
+    const dx = (tx / n - view.cx) * scale() + W / 2, dy = (ty / n - view.cy) * scale() + anchorY();
+    ctx.drawImage(img, dx, dy, s + 0.6, s + 0.6);
+  }
+  ctx.restore();
+}
+function poly(idxFrom, idxTo, color, width, dash) {
+  ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.setLineDash(dash || []);
+  ctx.beginPath();
+  for (let i = idxFrom; i <= idxTo; i++) { const [x, y] = toScreen(route.w[i][0], route.w[i][1]); if (i === idxFrom) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+  ctx.stroke(); ctx.setLineDash([]);
+}
+function drawRoute() {
+  const wpx = Math.max(4, Math.min(9, 7 / metersPerPx()));
+  for (const s of route.segs) poly(s.start, s.end, s.kind ? 'rgba(90,90,90,.55)' : 'rgba(255,154,60,.35)', s.kind ? wpx * 0.6 : wpx + 4, s.kind ? [8, 8] : null);
+  for (const s of route.segs) if (!s.kind) poly(s.start, s.end, '#ff9a3c', wpx);
+  // gelaufener Teil
+  if (nav.idx > 0) {
+    for (const s of route.segs) { if (s.start >= nav.idx) break; poly(s.start, Math.min(s.end, nav.idx), s.kind ? 'rgba(60,60,60,.5)' : '#2fb36a', s.kind ? wpx * 0.6 : wpx, s.kind ? [8, 8] : null); }
+  }
+  if (view.z >= 14) for (const c of route.corners) dot(toScreen(route.w[c][0], route.w[c][1]), '#fff', 3.5, '#ff9a3c');
+  dot(toScreen(route.w[0][0], route.w[0][1]), '#2fb36a', 7, '#fff');
+  const e = route.w.length - 1; dot(toScreen(route.w[e][0], route.w[e][1]), '#e0493f', 7, '#fff');
+  if (nav.nextCorner != null && !nav.finished) dot(toScreen(route.w[nav.nextCorner][0], route.w[nav.nextCorner][1]), '#ffd166', 6, '#1c1f26');
+}
+function dot([x, y], color, r, ring) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); if (ring) { ctx.lineWidth = 2; ctx.strokeStyle = ring; ctx.stroke(); } }
+function drawMe() {
+  if (!geo.ll) return;
+  const [x, y] = toScreen(lon2x(geo.ll[1]), lat2y(geo.ll[0]));
+  const r = Math.min(120, geo.acc / metersPerPx());
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = 'rgba(40,120,255,.14)'; ctx.fill();
+  if (geo.heading != null) {
+    const a = (geo.heading * Math.PI / 180) - view.rot;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, 26, a - Math.PI / 2 - 0.45, a - Math.PI / 2 + 0.45); ctx.closePath();
+    ctx.fillStyle = 'rgba(40,120,255,.35)'; ctx.fill();
+  }
+  dot([x, y], '#2a7bff', 9, '#fff');
+}
+
+// ---------- Navigation ----------
+function updateNav() {
+  if (!route || !geo.ll) return;
+  const p = route.toXY(geo.ll[0], geo.ll[1]);
+  const xy = route.xy; const n = xy.length;
+  function nearest(a, b) {
+    let best = { d: Infinity, i: a, t: 0 };
+    for (let i = Math.max(0, a); i < Math.min(n - 1, b); i++) {
+      const ax = xy[i][0], ay = xy[i][1], bx = xy[i + 1][0], by = xy[i + 1][1];
+      const vx = bx - ax, vy = by - ay; const L2 = vx * vx + vy * vy || 1e-9;
+      const t = Math.max(0, Math.min(1, ((p[0] - ax) * vx + (p[1] - ay) * vy) / L2));
+      const d = Math.hypot(p[0] - ax - t * vx, p[1] - ay - t * vy);
+      if (d < best.d) best = { d, i, t };
+    }
+    return best;
+  }
+  let b = nearest(nav.idx - 3, nav.idx + 40);
+  if (b.d > 60 || !nav.started) { const g = nearest(0, n); if (g.d < b.d - 15 || !nav.started) b = g; }
+  nav.started = true;
+  nav.idx = b.i; nav.offm = b.d;
+  nav.done = route.cum[b.i] + b.t * (route.cum[b.i + 1] - route.cum[b.i]);
+  nav.finished = route.total - nav.done < 25 && b.i >= n - 3;
+  let nc = null; for (const c of route.corners) if (c > b.i) { nc = c; break; }
+  nav.nextCorner = nc;
+  renderHint();
+}
+function turnAt(c) {
+  const xy = route.xy; const n = xy.length;
+  let a = c, bb = c; while (a > 0 && route.cum[c] - route.cum[a] < 18) a--; while (bb < n - 1 && route.cum[bb] - route.cum[c] < 18) bb++;
+  const h1 = Math.atan2(xy[c][1] - xy[a][1], xy[c][0] - xy[a][0]), h2 = Math.atan2(xy[bb][1] - xy[c][1], xy[bb][0] - xy[c][0]);
+  let d = (h2 - h1) * 180 / Math.PI; d = ((d + 540) % 360) - 180; return d;  // >0 links (Mathe-Winkel), <0 rechts
+}
+const fmtKm = m => (m / 1000).toFixed(1).replace('.', ',') + ' km';
+const fmtM = m => m >= 950 ? fmtKm(m) : Math.round(m / 5) * 5 + ' m';
+function renderHint() {
+  $('progress').textContent = Math.round(100 * nav.done / route.total) + ' %';
+  $('dist').textContent = fmtKm(nav.done) + ' von ' + fmtKm(route.total);
+  const arrow = $('arrow'), main = $('hintMain'), sub = $('hintSub');
+  const seg = route.segs[route.segOf[nav.idx]];
+  const where = seg.kind ? 'Verbindung' : 'Buchstabe ' + seg.ch;
+  const off = nav.offm > 40 ? `<span class="off">${Math.round(nav.offm)} m neben der Route</span> · ` : '';
+  if (nav.finished) { arrow.textContent = '✓'; main.textContent = 'Ziel erreicht'; sub.innerHTML = route.text + ' geschafft, ' + fmtKm(route.total); return; }
+  if (!nav.started || nav.done < 1 && nav.offm > 40) {
+    arrow.textContent = '●'; main.textContent = 'Zum Start ' + fmtM(Math.hypot(...sub0())); sub.innerHTML = off + 'Grüner Punkt auf der Karte'; return;
+  }
+  if (nav.nextCorner == null) { arrow.textContent = '↑'; main.textContent = 'Weiter bis zum Ziel'; sub.innerHTML = off + fmtM(route.total - nav.done) + ' verbleibend'; return; }
+  const d = route.cum[nav.nextCorner] - nav.done; const t = turnAt(nav.nextCorner);
+  let word, sym;
+  const at = Math.abs(t);
+  if (at < 25) { word = 'geradeaus'; sym = '↑'; }
+  else if (at < 70) { word = t > 0 ? 'halb links' : 'halb rechts'; sym = t > 0 ? '↖' : '↗'; }
+  else if (at < 135) { word = t > 0 ? 'links' : 'rechts'; sym = t > 0 ? '←' : '→'; }
+  else { word = t > 0 ? 'scharf links' : 'scharf rechts'; sym = t > 0 ? '↙' : '↘'; }
+  const nextSeg = route.segs[route.segOf[Math.min(nav.nextCorner + 1, route.pts.length - 1)]];
+  const change = nextSeg !== seg ? (nextSeg.kind ? ', dann Verbindung' : ', dann Buchstabe ' + nextSeg.ch) : '';
+  arrow.textContent = sym; main.textContent = `In ${fmtM(Math.max(0, d))} ${word}`;
+  sub.innerHTML = off + where + change;
+}
+function sub0() { const p = route.toXY(geo.ll[0], geo.ll[1]); return [p[0] - route.xy[0][0], p[1] - route.xy[0][1]]; }
+
+// ---------- GPS ----------
+function onPos(lat, lon, acc, heading, speed) {
+  const first = !geo.ll;
+  geo.ll = [lat, lon]; geo.acc = acc || 0; geo.speed = speed || 0; geo.t = Date.now();
+  if (heading != null && !isNaN(heading) && (speed || 0) > 0.6) geo.heading = heading;
+  updateNav();
+  if (ui.follow) { view.cx = lon2x(lon); view.cy = lat2y(lat); if (first) view.z = Math.max(view.z, 16.5); if (ui.rotate && geo.heading != null) view.rot = geo.heading * Math.PI / 180; }
+  requestDraw();
+}
+function startGeo() {
+  if (route && route.sim) { startSim(); return; }
+  if (!navigator.geolocation) { toast('Kein GPS in diesem Browser'); return; }
+  navigator.geolocation.watchPosition(p => onPos(p.coords.latitude, p.coords.longitude, p.coords.accuracy, p.coords.heading, p.coords.speed),
+    err => { $('hintMain').textContent = 'Kein Standort'; $('hintSub').textContent = err.code === 1 ? 'Standortfreigabe im Browser erlauben' : err.message; },
+    { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 });
+  if (window.DeviceOrientationEvent) {
+    const handler = e => { let h = null; if (e.webkitCompassHeading != null) h = e.webkitCompassHeading; else if (e.absolute && e.alpha != null) h = 360 - e.alpha;
+      if (h != null && geo.speed < 0.6) { geo.heading = h; if (ui.follow && ui.rotate) { view.rot = h * Math.PI / 180; requestDraw(); } } };
+    window.addEventListener('deviceorientationabsolute', handler, true); window.addEventListener('deviceorientation', handler, true);
+  }
+}
+function requestCompass() {
+  if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === 'function') DeviceOrientationEvent.requestPermission().catch(() => {});
+}
+let simTimer = null;
+function startSim() {
+  let dist = -80, last = Date.now();
+  simTimer = setInterval(() => {
+    const now = Date.now(); dist += 1.5 * (now - last) / 1000 * 4; last = now;   // vierfache Gehgeschwindigkeit
+    if (dist < 0) { const p = route.pts[0]; onPos(p[0] + 0.0008, p[1] - 0.0006, 8, null, 0); return; }
+    if (dist > route.total + 5) { clearInterval(simTimer); return; }
+    let i = 1; while (i < route.cum.length - 1 && route.cum[i] < dist) i++;
+    const t = (dist - route.cum[i - 1]) / Math.max(1e-6, route.cum[i] - route.cum[i - 1]);
+    const la = route.pts[i - 1][0] + t * (route.pts[i][0] - route.pts[i - 1][0]) + (Math.random() - 0.5) * 0.00006;
+    const lo = route.pts[i - 1][1] + t * (route.pts[i][1] - route.pts[i - 1][1]) + (Math.random() - 0.5) * 0.00009;
+    const hd = (90 - Math.atan2(route.xy[i][1] - route.xy[i - 1][1], route.xy[i][0] - route.xy[i - 1][0]) * 180 / Math.PI + 360) % 360;
+    onPos(la, lo, 9, hd, 1.5);
+  }, 500);
+}
+
+// ---------- Bedienung ----------
+let touches = new Map(); let pinch = null; let panStart = null;
+canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); touches.set(e.pointerId, [e.clientX, e.clientY]); if (touches.size === 1) panStart = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy }; if (touches.size === 2) { const [a, b] = [...touches.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), z: view.z }; } });
+canvas.addEventListener('pointermove', e => {
+  if (!touches.has(e.pointerId)) return;
+  touches.set(e.pointerId, [e.clientX, e.clientY]);
+  if (touches.size === 1 && panStart) {
+    const dx = e.clientX - panStart.x, dy = e.clientY - panStart.y;
+    if (Math.hypot(dx, dy) > 6) setFollow(false);
+    const c = Math.cos(view.rot), si = Math.sin(view.rot); const rx = dx * c - dy * si, ry = dx * si + dy * c;
+    view.cx = panStart.cx - rx / scale(); view.cy = panStart.cy - ry / scale(); requestDraw();
+  } else if (touches.size === 2 && pinch) {
+    const [a, b] = [...touches.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    view.z = Math.max(10, Math.min(19, pinch.z + Math.log2(d / pinch.d))); requestDraw();
+  }
+});
+const endTouch = e => { touches.delete(e.pointerId); if (touches.size < 2) pinch = null; if (touches.size === 0) panStart = null; else if (touches.size === 1) { const [p] = [...touches.values()]; panStart = { x: p[0], y: p[1], cx: view.cx, cy: view.cy }; } };
+canvas.addEventListener('pointerup', endTouch); canvas.addEventListener('pointercancel', endTouch);
+canvas.addEventListener('wheel', e => { e.preventDefault(); view.z = Math.max(10, Math.min(19, view.z - e.deltaY * 0.0025)); requestDraw(); }, { passive: false });
+function setFollow(on) { ui.follow = on; $('btnFollow').classList.toggle('on', on); if (on && geo.ll) { view.cx = lon2x(geo.ll[1]); view.cy = lat2y(geo.ll[0]); if (!ui.rotate) view.rot = 0; } if (!on) view.rot = 0; requestDraw(); }
+$('btnFollow').onclick = () => { setFollow(!ui.follow); if (ui.follow) view.z = Math.max(view.z, 16); requestDraw(); };
+$('btnRotate').onclick = () => { ui.rotate = !ui.rotate; $('btnRotate').classList.toggle('on', ui.rotate); requestCompass(); if (!ui.rotate) view.rot = 0; else if (geo.heading != null) view.rot = geo.heading * Math.PI / 180; if (ui.rotate) setFollow(true); requestDraw(); };
+$('btnOverview').onclick = () => { setFollow(false); fitRoute(); };
+function fitRoute() {
+  let x0 = 1, x1 = 0, y0 = 1, y1 = 0; for (const [x, y] of route.w) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  view.rot = 0; view.cx = (x0 + x1) / 2; view.cy = (y0 + y1) / 2;
+  view.z = Math.max(10, Math.min(18, Math.log2(Math.min((W - 40) / (x1 - x0), (H - 260) / (y1 - y0)) / TILE)));
+  requestDraw();
+}
+function toast(msg, ms = 2500) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(() => t.style.display = 'none', ms); }
+async function keepAwake() { try { if ('wakeLock' in navigator) { await navigator.wakeLock.request('screen'); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') navigator.wakeLock.request('screen').catch(() => {}); }); } } catch { /* egal */ } }
+
+// ---------- Start ----------
+function load(frag) {
+  const r = parseRoute(frag);
+  if (!r) return false;
+  route = prepare(r);
+  try { localStorage.setItem('sz_route', frag); } catch { /* egal */ }
+  $('title').textContent = route.text; $('dist').textContent = '0,0 von ' + fmtKm(route.total);
+  $('empty').style.display = 'none';
+  fitRoute(); startGeo(); keepAwake();
+  return true;
+}
+$('pasteBtn').onclick = () => { const v = $('pasteBox').value.trim(); const i = v.indexOf('#'); if (i < 0 || !load(v.slice(i))) toast('Kein gültiger Schriftzug-Link'); };
+window.addEventListener('resize', resize);
+window.addEventListener('hashchange', () => { if (location.hash.length > 10) load(location.hash); });
+resize();
+let saved = null; try { saved = localStorage.getItem('sz_route'); } catch { /* egal */ }
+if (!(location.hash.length > 10 && load(location.hash)) && !(saved && load(saved))) $('empty').style.display = 'flex';
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
